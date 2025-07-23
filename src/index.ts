@@ -25,7 +25,33 @@ import { ZodError, z } from "zod";
 /**
  * Type definition for JSON objects
  */
-type JsonObject = Record<string, any>;
+type JsonObject = Record<string, unknown>;
+
+/**
+ * Interface for OAuth2 flow
+ */
+interface OAuth2Flow {
+	tokenUrl?: string;
+	authorizationUrl?: string;
+	scopes?: Record<string, string>;
+}
+
+/**
+ * Interface for security scheme
+ */
+interface SecurityScheme {
+	type: string;
+	scheme?: string;
+	name?: string;
+	in?: string;
+	flows?: {
+		clientCredentials?: OAuth2Flow;
+		password?: OAuth2Flow;
+		authorizationCode?: OAuth2Flow;
+		implicit?: OAuth2Flow;
+	};
+	[key: string]: unknown;
+}
 
 /**
  * Interface for MCP Tool Definition
@@ -33,12 +59,17 @@ type JsonObject = Record<string, any>;
 interface McpToolDefinition {
 	name: string;
 	description: string;
-	inputSchema: any;
+	inputSchema: {
+		type: "object";
+		properties?: Record<string, unknown>;
+		required?: string[];
+		[key: string]: unknown;
+	};
 	method: string;
 	pathTemplate: string;
 	executionParameters: { name: string; in: string }[];
 	requestBodyContentType?: string;
-	securityRequirements: any[];
+	securityRequirements: Record<string, unknown>[];
 }
 
 /**
@@ -2036,13 +2067,22 @@ declare global {
  */
 async function acquireOAuth2Token(
 	schemeName: string,
-	scheme: any,
+	scheme: SecurityScheme,
 ): Promise<string | null | undefined> {
 	try {
 		// Check if we have the necessary credentials
-		const clientId = process.env[`OAUTH_CLIENT_ID_SCHEMENAME`];
-		const clientSecret = process.env[`OAUTH_CLIENT_SECRET_SCHEMENAME`];
-		const scopes = process.env[`OAUTH_SCOPES_SCHEMENAME`];
+		const clientId =
+			process.env[
+				`OAUTH_CLIENT_ID_${schemeName.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase()}`
+			];
+		const clientSecret =
+			process.env[
+				`OAUTH_CLIENT_SECRET_${schemeName.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase()}`
+			];
+		const scopes =
+			process.env[
+				`OAUTH_SCOPES_${schemeName.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase()}`
+			];
 
 		if (!clientId || !clientSecret) {
 			console.error(
@@ -2147,7 +2187,7 @@ async function executeApiTool(
 	toolName: string,
 	definition: McpToolDefinition,
 	toolArgs: JsonObject,
-	allSecuritySchemes: Record<string, any>,
+	allSecuritySchemes: Record<string, SecurityScheme>,
 ): Promise<CallToolResult> {
 	try {
 		// Validate arguments against the input schema
@@ -2180,9 +2220,9 @@ async function executeApiTool(
 
 		// Prepare URL, query parameters, headers, and request body
 		let urlPath = definition.pathTemplate;
-		const queryParams: Record<string, any> = {};
+		const queryParams: Record<string, unknown> = {};
 		const headers: Record<string, string> = { Accept: "application/json" };
-		let requestBodyData: any;
+		let requestBodyData: unknown;
 
 		// Apply parameters to the URL path, query, or headers
 		definition.executionParameters.forEach((param) => {
@@ -2212,9 +2252,9 @@ async function executeApiTool(
 		// Handle request body if needed
 		if (
 			definition.requestBodyContentType &&
-			typeof validatedArgs["requestBody"] !== "undefined"
+			typeof validatedArgs.requestBody !== "undefined"
 		) {
-			requestBodyData = validatedArgs["requestBody"];
+			requestBodyData = validatedArgs.requestBody;
 			headers["content-type"] = definition.requestBodyContentType;
 		}
 
@@ -2222,7 +2262,7 @@ async function executeApiTool(
 		// Security requirements use OR between array items and AND within each object
 		const appliedSecurity = definition.securityRequirements?.find((req) => {
 			// Try each security requirement (combined with OR)
-			return Object.entries(req).every(([schemeName, scopesArray]) => {
+			return Object.entries(req).every(([schemeName, _scopesArray]) => {
 				const scheme = allSecuritySchemes[schemeName];
 				if (!scheme) return false;
 
@@ -2307,20 +2347,19 @@ async function executeApiTool(
 							`API_KEY_${schemeName.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase()}`
 						];
 					if (apiKey) {
-						if (scheme.in === "header") {
+						if (scheme.in === "header" && scheme.name) {
 							headers[scheme.name.toLowerCase()] = apiKey;
 							console.error(
 								`Applied API key '${schemeName}' in header '${scheme.name}'`,
 							);
-						} else if (scheme.in === "query") {
+						} else if (scheme.in === "query" && scheme.name) {
 							queryParams[scheme.name] = apiKey;
 							console.error(
 								`Applied API key '${schemeName}' in query parameter '${scheme.name}'`,
 							);
-						} else if (scheme.in === "cookie") {
+						} else if (scheme.in === "cookie" && scheme.name) {
 							// Add the cookie, preserving other cookies if they exist
-							headers["cookie"] =
-								`${scheme.name}=${apiKey}${headers["cookie"] ? `; ${headers["cookie"]}` : ""}`;
+							headers.cookie = `${scheme.name}=${apiKey}${headers.cookie ? `; ${headers.cookie}` : ""}`;
 							console.error(
 								`Applied API key '${schemeName}' in cookie '${scheme.name}'`,
 							);
@@ -2335,7 +2374,7 @@ async function executeApiTool(
 								`BEARER_TOKEN_${schemeName.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase()}`
 							];
 						if (token) {
-							headers["authorization"] = `Bearer ${token}`;
+							headers.authorization = `Bearer ${token}`;
 							console.error(`Applied Bearer token for '${schemeName}'`);
 						}
 					} else if (scheme.scheme?.toLowerCase() === "basic") {
@@ -2348,8 +2387,7 @@ async function executeApiTool(
 								`BASIC_PASSWORD_${schemeName.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase()}`
 							];
 						if (username && password) {
-							headers["authorization"] =
-								`Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
+							headers.authorization = `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
 							console.error(`Applied Basic authentication for '${schemeName}'`);
 						}
 					}
@@ -2375,7 +2413,7 @@ async function executeApiTool(
 
 					// Apply token if available
 					if (token) {
-						headers["authorization"] = `Bearer ${token}`;
+						headers.authorization = `Bearer ${token}`;
 						console.error(`Applied OAuth2 token for '${schemeName}'`);
 
 						// List the scopes that were requested, if any
@@ -2392,7 +2430,7 @@ async function executeApiTool(
 							`OPENID_TOKEN_${schemeName.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase()}`
 						];
 					if (token) {
-						headers["authorization"] = `Bearer ${token}`;
+						headers.authorization = `Bearer ${token}`;
 						console.error(`Applied OpenID Connect token for '${schemeName}'`);
 
 						// List the scopes that were requested, if any
@@ -2454,7 +2492,7 @@ async function executeApiTool(
 		) {
 			try {
 				responseText = JSON.stringify(response.data, null, 2);
-			} catch (e) {
+			} catch (_e) {
 				responseText = "[Stringify Error]";
 			}
 		}
@@ -2494,7 +2532,7 @@ async function executeApiTool(
 		}
 		// Handle unexpected error types
 		else {
-			errorMessage = "Unexpected error: " + String(error);
+			errorMessage = `Unexpected error: ${String(error)}`;
 		}
 
 		// Log error to stderr
@@ -2584,7 +2622,7 @@ function formatApiError(error: AxiosError): string {
  * @returns Zod schema
  */
 function getZodSchemaFromJsonSchema(
-	jsonSchema: any,
+	jsonSchema: Record<string, unknown>,
 	toolName: string,
 ): z.ZodTypeAny {
 	if (typeof jsonSchema !== "object" || jsonSchema === null) {
@@ -2592,12 +2630,13 @@ function getZodSchemaFromJsonSchema(
 	}
 	try {
 		const zodSchemaString = jsonSchemaToZod(jsonSchema);
-		const zodSchema = eval(zodSchemaString);
+		// Use Function constructor instead of eval for better security
+		const zodSchema = new Function("z", `return ${zodSchemaString}`)(z);
 		if (typeof zodSchema?.parse !== "function") {
-			throw new Error("Eval did not produce a valid Zod schema.");
+			throw new Error("Generated code did not produce a valid Zod schema.");
 		}
 		return zodSchema as z.ZodTypeAny;
-	} catch (err: any) {
+	} catch (err: unknown) {
 		console.error(
 			`Failed to generate/evaluate Zod schema for '${toolName}':`,
 			err,
