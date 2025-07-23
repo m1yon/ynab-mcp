@@ -73,6 +73,163 @@ interface McpToolDefinition {
 }
 
 /**
+ * Convert dollars to milliunits (YNAB format)
+ * @param dollars - Amount in dollars (e.g., 10.50)
+ * @returns Amount in milliunits (e.g., 10500)
+ */
+function dollarsToMilliunits(dollars: number): number {
+	return Math.round(dollars * 1000);
+}
+
+/**
+ * Convert milliunits to dollars
+ * @param milliunits - Amount in milliunits (e.g., 10500)
+ * @returns Amount in dollars (e.g., 10.50)
+ */
+function milliunitsToDollars(milliunits: number): number {
+	return milliunits / 1000;
+}
+
+/**
+ * Format milliunits as currency string
+ * @param milliunits - Amount in milliunits
+ * @param currencySymbol - Currency symbol (default: '$')
+ * @returns Formatted currency string (e.g., '$10.50')
+ */
+function formatMilliunitsAsCurrency(milliunits: number, currencySymbol: string = "$"): string {
+	const dollars = milliunitsToDollars(milliunits);
+	return `${currencySymbol}${dollars.toFixed(2)}`;
+}
+
+/**
+ * Transform input data by converting dollar amounts to milliunits
+ * @param data - Input data object
+ * @param toolName - Name of the tool for context
+ * @returns Transformed data with dollar amounts converted to milliunits
+ */
+function transformInputData(data: JsonObject, toolName: string): JsonObject {
+	const transformed = { ...data };
+	
+	// Handle different tool types that require milliunits conversion
+	if (toolName === "createAccount" && transformed.requestBody && typeof transformed.requestBody === "object") {
+		const requestBody = transformed.requestBody as JsonObject;
+		if (requestBody.account && typeof requestBody.account === "object") {
+			const account = requestBody.account as JsonObject;
+			if (typeof account.balance === "number") {
+				account.balance = dollarsToMilliunits(account.balance);
+			}
+		}
+	}
+	
+	if (toolName === "updateCategory" && transformed.requestBody && typeof transformed.requestBody === "object") {
+		const requestBody = transformed.requestBody as JsonObject;
+		if (requestBody.category && typeof requestBody.category === "object") {
+			const category = requestBody.category as JsonObject;
+			if (typeof category.goal_target === "number") {
+				category.goal_target = dollarsToMilliunits(category.goal_target);
+			}
+		}
+	}
+	
+	if (toolName === "updateMonthCategory" && transformed.requestBody && typeof transformed.requestBody === "object") {
+		const requestBody = transformed.requestBody as JsonObject;
+		if (requestBody.category && typeof requestBody.category === "object") {
+			const category = requestBody.category as JsonObject;
+			if (typeof category.budgeted === "number") {
+				category.budgeted = dollarsToMilliunits(category.budgeted);
+			}
+		}
+	}
+	
+	if ((toolName === "createTransaction" || toolName === "updateTransaction") && transformed.requestBody && typeof transformed.requestBody === "object") {
+		const requestBody = transformed.requestBody as JsonObject;
+		if (requestBody.transaction && typeof requestBody.transaction === "object") {
+			const transaction = requestBody.transaction as JsonObject;
+			if (typeof transaction.amount === "number") {
+				transaction.amount = dollarsToMilliunits(transaction.amount);
+			}
+			if (Array.isArray(transaction.subtransactions)) {
+				transaction.subtransactions.forEach((subtransaction: JsonObject) => {
+					if (typeof subtransaction.amount === "number") {
+						subtransaction.amount = dollarsToMilliunits(subtransaction.amount);
+					}
+				});
+			}
+		}
+	}
+	
+	if (toolName === "updateTransactions" && transformed.requestBody && typeof transformed.requestBody === "object") {
+		const requestBody = transformed.requestBody as JsonObject;
+		if (Array.isArray(requestBody.transactions)) {
+			requestBody.transactions.forEach((transaction: JsonObject) => {
+				if (typeof transaction.amount === "number") {
+					transaction.amount = dollarsToMilliunits(transaction.amount);
+				}
+				if (Array.isArray(transaction.subtransactions)) {
+					transaction.subtransactions.forEach((subtransaction: JsonObject) => {
+						if (typeof subtransaction.amount === "number") {
+							subtransaction.amount = dollarsToMilliunits(subtransaction.amount);
+						}
+					});
+				}
+			});
+		}
+	}
+	
+	if ((toolName === "createScheduledTransaction" || toolName === "updateScheduledTransaction") && transformed.requestBody && typeof transformed.requestBody === "object") {
+		const requestBody = transformed.requestBody as JsonObject;
+		if (requestBody.scheduled_transaction && typeof requestBody.scheduled_transaction === "object") {
+			const scheduledTransaction = requestBody.scheduled_transaction as JsonObject;
+			if (typeof scheduledTransaction.amount === "number") {
+				scheduledTransaction.amount = dollarsToMilliunits(scheduledTransaction.amount);
+			}
+		}
+	}
+	
+	return transformed;
+}
+
+/**
+ * Transform output data by adding display formats for milliunits amounts
+ * @param data - Response data object
+ * @returns Transformed data with display formats added
+ */
+function transformOutputData(data: unknown): unknown {
+	if (!data || typeof data !== "object") {
+		return data;
+	}
+	
+	// Handle arrays
+	if (Array.isArray(data)) {
+		return data.map(item => transformOutputData(item));
+	}
+	
+	const transformed = { ...data } as Record<string, unknown>;
+	
+	// Add display formats for common milliunits fields
+	const milliunitFields = [
+		"balance", "cleared_balance", "uncleared_balance", "working_balance",
+		"amount", "budgeted", "activity", "goal_target", "goal_overall_funded",
+		"goal_under_funded", "goal_overall_left"
+	];
+	
+	milliunitFields.forEach(field => {
+		if (typeof transformed[field] === "number") {
+			transformed[`${field}_display`] = formatMilliunitsAsCurrency(transformed[field] as number);
+		}
+	});
+	
+	// Recursively transform nested objects
+	Object.keys(transformed).forEach(key => {
+		if (transformed[key] && typeof transformed[key] === "object") {
+			transformed[key] = transformOutputData(transformed[key]);
+		}
+	});
+	
+	return transformed;
+}
+
+/**
  * Server configuration
  */
 export const SERVER_NAME = "ynab-api-endpoints";
@@ -216,7 +373,7 @@ const toolDefinitionMap: Map<string, McpToolDefinition> = new Map([
 		"createAccount",
 		{
 			name: "createAccount",
-			description: `Creates a new account`,
+			description: `Creates a new account. Note: All monetary amounts must be in dollars format (e.g., 10.50 for $10.50)`,
 			inputSchema: {
 				type: "object",
 				properties: {
@@ -259,8 +416,7 @@ const toolDefinitionMap: Map<string, McpToolDefinition> = new Map([
 									balance: {
 										type: "number",
 										description:
-											"The current balance of the account in milliunits format",
-										format: "int64",
+											"The current balance of the account in dollars (e.g., 10.50 for $10.50)",
 									},
 								},
 							},
@@ -374,7 +530,7 @@ const toolDefinitionMap: Map<string, McpToolDefinition> = new Map([
 		"updateCategory",
 		{
 			name: "updateCategory",
-			description: `Update a category`,
+			description: `Update a category. Note: All monetary amounts must be in dollars format (e.g., 10.50 for $10.50)`,
 			inputSchema: {
 				type: "object",
 				properties: {
@@ -400,8 +556,7 @@ const toolDefinitionMap: Map<string, McpToolDefinition> = new Map([
 									goal_target: {
 										type: ["number", "null"],
 										description:
-											"The goal target amount in milliunits format.  This amount can only be changed if the category already has a configured goal (goal_type != null).",
-										format: "int64",
+											"The goal target amount in dollars (e.g., 10.50 for $10.50). This amount can only be changed if the category already has a configured goal (goal_type != null).",
 									},
 								},
 							},
@@ -463,7 +618,7 @@ const toolDefinitionMap: Map<string, McpToolDefinition> = new Map([
 		"updateMonthCategory",
 		{
 			name: "updateMonthCategory",
-			description: `Update a category for a specific month.  Only \`budgeted\` amount can be updated.`,
+			description: `Update a category for a specific month. Only \`budgeted\` amount can be updated. Note: All monetary amounts must be in dollars format (e.g., 10.50 for $10.50)`,
 			inputSchema: {
 				type: "object",
 				properties: {
@@ -492,8 +647,7 @@ const toolDefinitionMap: Map<string, McpToolDefinition> = new Map([
 								properties: {
 									budgeted: {
 										type: "number",
-										description: "Budgeted amount in milliunits format",
-										format: "int64",
+										description: "Budgeted amount in dollars (e.g., 10.50 for $10.50)",
 									},
 								},
 							},
@@ -814,7 +968,7 @@ const toolDefinitionMap: Map<string, McpToolDefinition> = new Map([
 		"createTransaction",
 		{
 			name: "createTransaction",
-			description: `Creates a single transaction or multiple transactions.  If you provide a body containing a \`transaction\` object, a single transaction will be created and if you provide a body containing a \`transactions\` array, multiple transactions will be created.  Scheduled transactions (transactions with a future date) cannot be created on this endpoint.`,
+			description: `Creates a single transaction or multiple transactions. If you provide a body containing a \`transaction\` object, a single transaction will be created and if you provide a body containing a \`transactions\` array, multiple transactions will be created. Scheduled transactions (transactions with a future date) cannot be created on this endpoint. Note: All monetary amounts must be in dollars format (e.g., 10.50 for $10.50)`,
 			inputSchema: {
 				type: "object",
 				properties: {
@@ -839,10 +993,10 @@ const toolDefinitionMap: Map<string, McpToolDefinition> = new Map([
 												format: "date",
 											},
 											amount: {
-												type: "integer",
+												type: "number",
 												description:
-													"The transaction amount in milliunits format.  Split transaction amounts cannot be changed and if a different amount is supplied it will be ignored.",
-												format: "int64",
+													"The transaction amount in dollars (e.g., 10.50 for $10.50). Split transaction amounts cannot be changed and if a different amount is supplied it will be ignored.",
+
 											},
 											payee_id: {
 												type: "string",
@@ -900,10 +1054,10 @@ const toolDefinitionMap: Map<string, McpToolDefinition> = new Map([
 													type: "object",
 													properties: {
 														amount: {
-															type: "integer",
+															type: "number",
 															description:
-																"The subtransaction amount in milliunits format.",
-															format: "int64",
+																"The subtransaction amount in dollars (e.g., 10.50 for $10.50).",
+			
 														},
 														payee_id: {
 															type: "string",
@@ -964,10 +1118,10 @@ const toolDefinitionMap: Map<string, McpToolDefinition> = new Map([
 													format: "date",
 												},
 												amount: {
-													type: "integer",
+													type: "number",
 													description:
-														"The transaction amount in milliunits format.  Split transaction amounts cannot be changed and if a different amount is supplied it will be ignored.",
-													format: "int64",
+														"The transaction amount in dollars (e.g., 10.50 for $10.50). Split transaction amounts cannot be changed and if a different amount is supplied it will be ignored.",
+	
 												},
 												payee_id: {
 													type: "string",
@@ -1029,10 +1183,10 @@ const toolDefinitionMap: Map<string, McpToolDefinition> = new Map([
 														type: "object",
 														properties: {
 															amount: {
-																type: "integer",
+																type: "number",
 																description:
-																	"The subtransaction amount in milliunits format.",
-																format: "int64",
+																	"The subtransaction amount in dollars (e.g., 10.50 for $10.50).",
+				
 															},
 															payee_id: {
 																type: "string",
@@ -1098,7 +1252,7 @@ const toolDefinitionMap: Map<string, McpToolDefinition> = new Map([
 		"updateTransactions",
 		{
 			name: "updateTransactions",
-			description: `Updates multiple transactions, by \`id\` or \`import_id\`.`,
+			description: `Updates multiple transactions, by \`id\` or \`import_id\`. Note: All monetary amounts must be in dollars format (e.g., 10.50 for $10.50)`,
 			inputSchema: {
 				type: "object",
 				properties: {
@@ -1144,10 +1298,10 @@ const toolDefinitionMap: Map<string, McpToolDefinition> = new Map([
 													format: "date",
 												},
 												amount: {
-													type: "integer",
+													type: "number",
 													description:
-														"The transaction amount in milliunits format.  Split transaction amounts cannot be changed and if a different amount is supplied it will be ignored.",
-													format: "int64",
+														"The transaction amount in dollars (e.g., 10.50 for $10.50). Split transaction amounts cannot be changed and if a different amount is supplied it will be ignored.",
+	
 												},
 												payee_id: {
 													type: "string",
@@ -1209,10 +1363,10 @@ const toolDefinitionMap: Map<string, McpToolDefinition> = new Map([
 														type: "object",
 														properties: {
 															amount: {
-																type: "integer",
+																type: "number",
 																description:
-																	"The subtransaction amount in milliunits format.",
-																format: "int64",
+																	"The subtransaction amount in dollars (e.g., 10.50 for $10.50).",
+				
 															},
 															payee_id: {
 																type: "string",
@@ -1319,7 +1473,7 @@ const toolDefinitionMap: Map<string, McpToolDefinition> = new Map([
 		"updateTransaction",
 		{
 			name: "updateTransaction",
-			description: `Updates a single transaction`,
+			description: `Updates a single transaction. Note: All monetary amounts must be in dollars format (e.g., 10.50 for $10.50)`,
 			inputSchema: {
 				type: "object",
 				properties: {
@@ -1350,10 +1504,10 @@ const toolDefinitionMap: Map<string, McpToolDefinition> = new Map([
 												format: "date",
 											},
 											amount: {
-												type: "integer",
+												type: "number",
 												description:
-													"The transaction amount in milliunits format.  Split transaction amounts cannot be changed and if a different amount is supplied it will be ignored.",
-												format: "int64",
+													"The transaction amount in dollars (e.g., 10.50 for $10.50). Split transaction amounts cannot be changed and if a different amount is supplied it will be ignored.",
+
 											},
 											payee_id: {
 												type: "string",
@@ -1411,10 +1565,10 @@ const toolDefinitionMap: Map<string, McpToolDefinition> = new Map([
 													type: "object",
 													properties: {
 														amount: {
-															type: "integer",
+															type: "number",
 															description:
-																"The subtransaction amount in milliunits format.",
-															format: "int64",
+																"The subtransaction amount in dollars (e.g., 10.50 for $10.50).",
+			
 														},
 														payee_id: {
 															type: "string",
@@ -1730,7 +1884,7 @@ const toolDefinitionMap: Map<string, McpToolDefinition> = new Map([
 		"createScheduledTransaction",
 		{
 			name: "createScheduledTransaction",
-			description: `Creates a single scheduled transaction (a transaction with a future date).`,
+			description: `Creates a single scheduled transaction (a transaction with a future date). Note: All monetary amounts must be in dollars format (e.g., 10.50 for $10.50)`,
 			inputSchema: {
 				type: "object",
 				properties: {
@@ -1757,7 +1911,7 @@ const toolDefinitionMap: Map<string, McpToolDefinition> = new Map([
 									amount: {
 										type: "number",
 										description:
-											"The scheduled transaction amount in milliunits format.",
+											"The scheduled transaction amount in dollars (e.g., 10.50 for $10.50).",
 										format: "int64",
 									},
 									payee_id: {
@@ -1862,7 +2016,7 @@ const toolDefinitionMap: Map<string, McpToolDefinition> = new Map([
 		"updateScheduledTransaction",
 		{
 			name: "updateScheduledTransaction",
-			description: `Updates a single scheduled transaction`,
+			description: `Updates a single scheduled transaction. Note: All monetary amounts must be in dollars format (e.g., 10.50 for $10.50)`,
 			inputSchema: {
 				type: "object",
 				properties: {
@@ -1893,7 +2047,7 @@ const toolDefinitionMap: Map<string, McpToolDefinition> = new Map([
 									amount: {
 										type: "number",
 										description:
-											"The scheduled transaction amount in milliunits format.",
+											"The scheduled transaction amount in dollars (e.g., 10.50 for $10.50).",
 										format: "int64",
 									},
 									payee_id: {
@@ -2218,6 +2372,9 @@ async function executeApiTool(
 			}
 		}
 
+		// Transform input data (convert dollars to milliunits)
+		validatedArgs = transformInputData(validatedArgs, toolName);
+
 		// Prepare URL, query parameters, headers, and request body
 		let urlPath = definition.pathTemplate;
 		const queryParams: Record<string, unknown> = {};
@@ -2491,7 +2648,9 @@ async function executeApiTool(
 			response.data !== null
 		) {
 			try {
-				responseText = JSON.stringify(response.data, null, 2);
+				// Transform output data (add display formats for milliunits)
+				const transformedData = transformOutputData(response.data);
+				responseText = JSON.stringify(transformedData, null, 2);
 			} catch (_e) {
 				responseText = "[Stringify Error]";
 			}
